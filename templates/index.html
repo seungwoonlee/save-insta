@@ -59,7 +59,7 @@ function render(posts) {
         const cb = c.querySelector("input");
         if (e.target !== cb) cb.checked = !cb.checked;
         c.classList.toggle("sel", cb.checked);
-        cb.checked ? sel.set(key, {name: `${username}_${key}.jpg`, url: u}) : sel.delete(key);
+        cb.checked ? sel.set(key, {post: p.folder, name: `${i + 1}.jpg`, url: u}) : sel.delete(key);
         count();
       };
       $("#grid").append(c);

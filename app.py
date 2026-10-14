@@ -18,7 +18,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 PAGE_SIZE = 24
-DOWNLOAD_DIR = Path(__file__).parent / "downloads"
+BASE_DIR = Path(os.environ.get("SAVE_INSTA_DIR") or Path.cwd())  # 실행한 현재 디렉토리 기준
 ALLOWED_CDN = re.compile(r"(^|\.)(cdninstagram\.com|fbcdn\.net)$")
 RESERVED = {"p", "reel", "reels", "explore", "stories", "accounts", "tv", "direct"}
 
@@ -69,6 +69,7 @@ def post_to_dict(post: instaloader.Post) -> dict:
         images = [post.url]
     return {
         "shortcode": post.shortcode,
+        "folder": f"{post.date_utc:%Y%m%d}_{post.shortcode}",  # 포스트 폴더명
         "date": post.date_utc.strftime("%Y-%m-%d %H:%M"),
         "caption": (post.caption or "")[:120],
         "is_video": post.is_video,
@@ -108,6 +109,13 @@ def api_posts():
     return jsonify(username=username, posts=posts, has_more=len(posts) == PAGE_SIZE)
 
 
+def _safe_name(value: str) -> str:
+    name = re.sub(r"[^\w.\-]", "_", Path(str(value)).name).lstrip(".")
+    if not name:
+        raise ValueError("올바르지 않은 파일/폴더명입니다.")
+    return name
+
+
 def _check_cdn(url: str) -> str:
     p = urlparse(url)
     if p.scheme != "https" or not ALLOWED_CDN.search(p.hostname or ""):
@@ -130,7 +138,8 @@ def api_img():
 
 @app.post("/api/download")
 def api_download():
-    """선택한 이미지를 downloads/<username>/ 폴더에 개별 파일로 저장. body: {username, items:[{name,url}]}"""
+    """선택한 이미지를 <현재디렉토리>/<계정명>/<포스트폴더>/<번호>.jpg 로 저장.
+    body: {username, items:[{post, name, url}]}"""
     data = request.get_json(silent=True) or {}
     items = data.get("items", [])
     if not items:
@@ -138,21 +147,22 @@ def api_download():
     try:
         username = parse_username(data.get("username", ""))
         urls = [_check_cdn(it["url"]) for it in items]
+        posts = [_safe_name(it["post"]) for it in items]
+        names = [_safe_name(it["name"]) for it in items]
     except (ValueError, KeyError) as e:
         return jsonify(error=str(e)), 400
-    folder = DOWNLOAD_DIR / username
-    folder.mkdir(parents=True, exist_ok=True)
-    saved = []
+    saved = 0
     try:
-        for it, url in zip(items, urls):
+        for url, post, name in zip(urls, posts, names):
             r = requests.get(url, timeout=30)
             r.raise_for_status()
-            name = re.sub(r"[^\w.\-]", "_", Path(it["name"]).name).lstrip(".") or "image.jpg"
+            folder = BASE_DIR / username / post
+            folder.mkdir(parents=True, exist_ok=True)
             (folder / name).write_bytes(r.content)
-            saved.append(name)
+            saved += 1
     except requests.RequestException as e:
-        return jsonify(error=f"다운로드 실패: {e} ({len(saved)}장 저장됨)"), 502
-    return jsonify(count=len(saved), folder=str(folder))
+        return jsonify(error=f"다운로드 실패: {e} ({saved}장 저장됨)"), 502
+    return jsonify(count=saved, folder=str(BASE_DIR / username))
 
 
 if __name__ == "__main__":
