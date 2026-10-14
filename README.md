@@ -2,13 +2,16 @@
 
 인스타그램 프로필 URL을 입력하면 게시물 사진 목록(썸네일 그리드)을 보여주고, 선택한 사진을 폴더에 저장하는 로컬 유틸리티.
 
-## 실행
+## 실행 (파일 하나 `save_insta.py`)
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python app.py        # http://127.0.0.1:5000
+uv run save_insta.py        # 의존성 자동 설치 (uv 필요), 브라우저 자동 실행
+# 또는
+pip install -r requirements.txt && python save_insta.py
 ```
+`http://127.0.0.1:5000` (`PORT` 환경변수로 변경). 배포 시에는 `save_insta.py` 한 파일만 전달하면 됩니다.
+
+Python 없이 실행 파일로 배포하려면: `pip install pyinstaller && pyinstaller --onefile save_insta.py` → `dist/save_insta`
 
 ## 사용법
 1. 프로필 URL(`https://www.instagram.com/<username>/`) 입력 → **사진 불러오기**

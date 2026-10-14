@@ -1,13 +1,20 @@
-"""save-insta: 인스타그램 프로필 URL → 게시물 사진 목록 → 선택 다운로드.
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["flask>=3.0", "instaloader>=4.14", "requests>=2.31"]
+# ///
+"""save-insta: 인스타그램 프로필 URL → 게시물 사진/영상 목록 → 선택 다운로드.
 
-실행:  python app.py   →  http://127.0.0.1:5000
-공개 계정만 대상으로 하며, 로그인이 필요한 경우 README 의 세션 파일 방법을 사용한다.
+단일 파일 실행 (의존성 자동 설치):   uv run save_insta.py
+또는:  pip install flask instaloader requests && python save_insta.py
+→ 브라우저가 열리며 http://127.0.0.1:5000 에서 사용. 저장: ./downloads/<계정>/<날짜_포스트코드>/
 """
 from __future__ import annotations
 
 import os
 import re
 import threading
+import webbrowser
 from collections.abc import Iterator
 from itertools import islice
 from pathlib import Path
@@ -15,7 +22,7 @@ from urllib.parse import urlparse
 
 import instaloader
 import requests
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, Response, jsonify, request
 
 PAGE_SIZE = 24
 BASE_DIR = Path(os.environ.get("SAVE_INSTA_DIR") or Path.cwd() / "downloads")  # 기본: 현재 디렉토리/downloads
@@ -81,9 +88,115 @@ def post_to_dict(post: instaloader.Post) -> dict:
     }
 
 
+INDEX_HTML = r'''<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Save Insta</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#fafafa;color:#222}
+  header{position:sticky;top:0;background:#fff;border-bottom:1px solid #ddd;padding:12px 16px;z-index:5}
+  form{display:flex;gap:8px;flex-wrap:wrap}
+  input[type=text]{flex:1;min-width:240px;padding:8px 10px;font-size:15px}
+  button{padding:8px 14px;font-size:14px;cursor:pointer}
+  #bar{margin-top:8px;display:flex;gap:8px;align-items:center;font-size:14px}
+  #msg{padding:12px 16px;color:#c00}
+  #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:16px}
+  .cell{position:relative;aspect-ratio:1;background:#ddd;cursor:pointer;overflow:hidden;outline:3px solid transparent}
+  .cell.sel{outline-color:#0095f6}
+  .cell img{width:100%;height:100%;object-fit:cover}
+  .cell input{position:absolute;top:6px;left:6px;width:18px;height:18px}
+  .badge{position:absolute;right:6px;bottom:6px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:2px 6px;border-radius:4px}
+  #more{display:block;margin:0 auto 24px}
+</style>
+</head>
+<body>
+<header>
+  <form id="f">
+    <input type="text" id="url" placeholder="https://www.instagram.com/username/" required>
+    <button>사진 불러오기</button>
+  </form>
+  <div id="bar" hidden>
+    <button id="all" type="button">전체 선택/해제</button>
+    <button id="dl" type="button">선택 다운로드 (<span id="cnt">0</span>)</button>
+  </div>
+</header>
+<div id="msg"></div>
+<div id="grid"></div>
+<button id="more" hidden>더 보기</button>
+<script>
+const $ = s => document.querySelector(s);
+const sel = new Map();   // key -> {name,url}
+let username = "";
+
+const show = m => $("#msg").textContent = m || "";
+const count = () => $("#cnt").textContent = sel.size;
+const proxy = u => "/api/img?u=" + encodeURIComponent(u);
+
+function render(posts) {
+  for (const p of posts) {
+    p.media.forEach((m, i) => {
+      const key = `${p.shortcode}_${i + 1}`;
+      const c = document.createElement("div");
+      c.className = "cell";
+      c.title = `${p.date}\n${p.caption}`;
+      c.innerHTML = `<input type="checkbox"><img loading="lazy" src="${proxy(m.thumb)}">` +
+        (m.is_video ? '<span class="badge" style="left:6px;right:auto">▶ 영상</span>' : "") +
+        (p.media.length > 1 ? `<span class="badge">${i + 1}/${p.media.length}</span>` : "");
+      c.dataset.key = key;
+      c.onclick = e => {
+        const cb = c.querySelector("input");
+        if (e.target !== cb) cb.checked = !cb.checked;
+        c.classList.toggle("sel", cb.checked);
+        cb.checked ? sel.set(key, {post: p.folder, name: `${i + 1}.${m.is_video ? 'mp4' : 'jpg'}`, url: m.url}) : sel.delete(key);
+        count();
+      };
+      $("#grid").append(c);
+    });
+  }
+}
+
+async function load(more) {
+  show("불러오는 중...");
+  const r = await fetch("/api/posts", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({url: $("#url").value, more})});
+  const d = await r.json();
+  if (!r.ok) return show(d.error);
+  show("");
+  username = d.username;
+  if (!more) { $("#grid").innerHTML = ""; sel.clear(); count(); }
+  render(d.posts);
+  $("#bar").hidden = false;
+  $("#more").hidden = !d.has_more;
+}
+
+$("#f").onsubmit = e => { e.preventDefault(); load(false); };
+$("#more").onclick = () => load(true);
+$("#all").onclick = () => {
+  const cells = [...document.querySelectorAll(".cell")];
+  const all = cells.every(c => c.classList.contains("sel"));
+  cells.forEach(c => { if (c.classList.contains("sel") === all) c.click(); });
+};
+$("#dl").onclick = async () => {
+  if (!sel.size) return show("선택된 사진이 없습니다.");
+  show("저장 중...");
+  const r = await fetch("/api/download", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({username, items: [...sel.values()]})});
+  const d = await r.json();
+  if (!r.ok) return show(d.error);
+  show("");
+  alert(`${d.count}장 저장 완료\n${d.folder}`);
+};
+</script>
+</body>
+</html>
+'''
+
+
 @app.get("/")
 def index():
-    return render_template("index.html", page_size=PAGE_SIZE)
+    return Response(INDEX_HTML, mimetype="text/html")
 
 
 @app.post("/api/posts")
@@ -171,5 +284,13 @@ def api_download():
     return jsonify(count=saved, folder=str(BASE_DIR / username))
 
 
+def main() -> None:
+    port = int(os.environ.get("PORT", 5000))
+    url = f"http://127.0.0.1:{port}"
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    print(f"save-insta 실행 중: {url}  (종료: Ctrl+C)")
+    app.run(host="127.0.0.1", port=port, debug=False)
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    main()
