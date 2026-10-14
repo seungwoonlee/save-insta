@@ -3,11 +3,16 @@
 # requires-python = ">=3.9"
 # dependencies = ["flask>=3.0", "instaloader>=4.14", "requests>=2.31"]
 # ///
-"""save-insta: 인스타그램 프로필 URL → 게시물 사진/영상 목록 → 선택 다운로드.
+"""save-insta: 인스타그램 프로필 URL -> 게시물 사진/영상 목록 -> 선택 다운로드.
 
-단일 파일 실행 (의존성 자동 설치):   uv run save_insta.py
-또는:  pip install flask instaloader requests && python save_insta.py
-→ 브라우저가 열리며 http://127.0.0.1:5000 에서 사용. 저장: ./downloads/<계정>/<날짜_포스트코드>/
+실행 (Windows):  save_insta.bat 더블클릭  (Python 3.9+ 필요, 첫 실행 시 의존성 자동 설치)
+실행 (기타):     pip install flask instaloader requests && python save_insta.py
+브라우저가 열리며 http://127.0.0.1:5000 에서 사용 (PORT 환경변수로 변경).
+
+저장: ./downloads/<계정>/<날짜_포스트코드>/1.jpg, 2.mp4 ...  (SAVE_INSTA_DIR 로 위치 변경)
+인스타그램이 비로그인 요청을 막으면(401/429):
+    instaloader --login <내_아이디>   후   INSTA_SESSION_USER=<내_아이디> 로 실행
+비공개 계정은 지원하지 않습니다. 본인/허락받은 콘텐츠에만 사용하세요.
 """
 from __future__ import annotations
 
