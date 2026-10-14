@@ -1,17 +1,16 @@
-"""save-insta: 인스타그램 프로필 URL → 게시물 사진 목록 → 선택 다운로드(ZIP).
+"""save-insta: 인스타그램 프로필 URL → 게시물 사진 목록 → 선택 다운로드.
 
 실행:  python app.py   →  http://127.0.0.1:5000
 공개 계정만 대상으로 하며, 로그인이 필요한 경우 README 의 세션 파일 방법을 사용한다.
 """
 from __future__ import annotations
 
-import io
 import os
 import re
 import threading
-import zipfile
 from collections.abc import Iterator
 from itertools import islice
+from pathlib import Path
 from urllib.parse import urlparse
 
 import instaloader
@@ -19,6 +18,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 PAGE_SIZE = 24
+DOWNLOAD_DIR = Path(__file__).parent / "downloads"
 ALLOWED_CDN = re.compile(r"(^|\.)(cdninstagram\.com|fbcdn\.net)$")
 RESERVED = {"p", "reel", "reels", "explore", "stories", "accounts", "tv", "direct"}
 
@@ -130,25 +130,29 @@ def api_img():
 
 @app.post("/api/download")
 def api_download():
-    """선택한 이미지 URL 들을 ZIP 으로 묶어 반환. items: [{name, url}]"""
-    items = (request.get_json(silent=True) or {}).get("items", [])
+    """선택한 이미지를 downloads/<username>/ 폴더에 개별 파일로 저장. body: {username, items:[{name,url}]}"""
+    data = request.get_json(silent=True) or {}
+    items = data.get("items", [])
     if not items:
         return jsonify(error="선택된 사진이 없습니다."), 400
-    buf = io.BytesIO()
     try:
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as z:
-            for it in items:
-                r = requests.get(_check_cdn(it["url"]), timeout=30)
-                r.raise_for_status()
-                name = re.sub(r"[^\w.\-]", "_", it["name"]) or "image"
-                z.writestr(name if "." in name else name + ".jpg", r.content)
-    except ValueError as e:
+        username = parse_username(data.get("username", ""))
+        urls = [_check_cdn(it["url"]) for it in items]
+    except (ValueError, KeyError) as e:
         return jsonify(error=str(e)), 400
+    folder = DOWNLOAD_DIR / username
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = []
+    try:
+        for it, url in zip(items, urls):
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            name = re.sub(r"[^\w.\-]", "_", Path(it["name"]).name).lstrip(".") or "image.jpg"
+            (folder / name).write_bytes(r.content)
+            saved.append(name)
     except requests.RequestException as e:
-        return jsonify(error=f"다운로드 실패: {e}"), 502
-    buf.seek(0)
-    return Response(buf.getvalue(), mimetype="application/zip",
-                    headers={"Content-Disposition": 'attachment; filename="save-insta.zip"'})
+        return jsonify(error=f"다운로드 실패: {e} ({len(saved)}장 저장됨)"), 502
+    return jsonify(count=len(saved), folder=str(folder))
 
 
 if __name__ == "__main__":

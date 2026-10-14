@@ -90,15 +90,13 @@ $("#all").onclick = () => {
 };
 $("#dl").onclick = async () => {
   if (!sel.size) return show("선택된 사진이 없습니다.");
-  show("ZIP 생성 중...");
+  show("저장 중...");
   const r = await fetch("/api/download", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({items: [...sel.values()]})});
-  if (!r.ok) return show((await r.json()).error);
+    body: JSON.stringify({username, items: [...sel.values()]})});
+  const d = await r.json();
+  if (!r.ok) return show(d.error);
   show("");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(await r.blob());
-  a.download = `${username}.zip`;
-  a.click();
+  alert(`${d.count}장 저장 완료\n${d.folder}`);
 };
 </script>
 </body>
