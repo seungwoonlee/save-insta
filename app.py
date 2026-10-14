@@ -18,7 +18,7 @@ import requests
 from flask import Flask, Response, jsonify, render_template, request
 
 PAGE_SIZE = 24
-BASE_DIR = Path(os.environ.get("SAVE_INSTA_DIR") or Path.cwd())  # 실행한 현재 디렉토리 기준
+BASE_DIR = Path(os.environ.get("SAVE_INSTA_DIR") or Path.cwd() / "downloads")  # 기본: 현재 디렉토리/downloads
 ALLOWED_CDN = re.compile(r"(^|\.)(cdninstagram\.com|fbcdn\.net)$")
 RESERVED = {"p", "reel", "reels", "explore", "stories", "accounts", "tv", "direct"}
 
@@ -62,18 +62,22 @@ def parse_username(value: str) -> str:
 
 
 def post_to_dict(post: instaloader.Post) -> dict:
-    """Post → UI 용 dict. 슬라이드(여러 장) 게시물은 모든 이미지를 images 에 담는다."""
+    """Post → UI 용 dict. 슬라이드 게시물은 장별로 media 에 담는다. (thumb=미리보기, url=저장할 원본)"""
     if post.typename == "GraphSidecar":
-        images = [n.display_url for n in post.get_sidecar_nodes()]
+        media = [
+            {"thumb": n.display_url, "is_video": n.is_video,
+             "url": n.video_url if n.is_video else n.display_url}
+            for n in post.get_sidecar_nodes()
+        ]
     else:
-        images = [post.url]
+        media = [{"thumb": post.url, "is_video": post.is_video,
+                  "url": post.video_url if post.is_video else post.url}]
     return {
         "shortcode": post.shortcode,
         "folder": f"{post.date_utc:%Y%m%d}_{post.shortcode}",  # 포스트 폴더명
         "date": post.date_utc.strftime("%Y-%m-%d %H:%M"),
         "caption": (post.caption or "")[:120],
-        "is_video": post.is_video,
-        "images": images,
+        "media": media,
     }
 
 
@@ -138,7 +142,7 @@ def api_img():
 
 @app.post("/api/download")
 def api_download():
-    """선택한 이미지를 <현재디렉토리>/<계정명>/<포스트폴더>/<번호>.jpg 로 저장.
+    """선택한 사진/영상을 <BASE_DIR>/<계정명>/<포스트폴더>/<번호>.jpg|mp4 로 저장.
     body: {username, items:[{post, name, url}]}"""
     data = request.get_json(silent=True) or {}
     items = data.get("items", [])
@@ -154,11 +158,13 @@ def api_download():
     saved = 0
     try:
         for url, post, name in zip(urls, posts, names):
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
             folder = BASE_DIR / username / post
             folder.mkdir(parents=True, exist_ok=True)
-            (folder / name).write_bytes(r.content)
+            with requests.get(url, timeout=30, stream=True) as r:
+                r.raise_for_status()
+                with open(folder / name, "wb") as f:  # 영상은 크므로 스트리밍 저장
+                    for chunk in r.iter_content(1 << 16):
+                        f.write(chunk)
             saved += 1
     except requests.RequestException as e:
         return jsonify(error=f"다운로드 실패: {e} ({saved}장 저장됨)"), 502

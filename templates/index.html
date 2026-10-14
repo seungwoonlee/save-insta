@@ -46,20 +46,20 @@ const proxy = u => "/api/img?u=" + encodeURIComponent(u);
 
 function render(posts) {
   for (const p of posts) {
-    p.images.forEach((u, i) => {
+    p.media.forEach((m, i) => {
       const key = `${p.shortcode}_${i + 1}`;
       const c = document.createElement("div");
       c.className = "cell";
       c.title = `${p.date}\n${p.caption}`;
-      c.innerHTML = `<input type="checkbox"><img loading="lazy" src="${proxy(u)}">` +
-        (p.is_video ? '<span class="badge">영상(썸네일)</span>' : "") +
-        (p.images.length > 1 ? `<span class="badge">${i + 1}/${p.images.length}</span>` : "");
+      c.innerHTML = `<input type="checkbox"><img loading="lazy" src="${proxy(m.thumb)}">` +
+        (m.is_video ? '<span class="badge" style="left:6px;right:auto">▶ 영상</span>' : "") +
+        (p.media.length > 1 ? `<span class="badge">${i + 1}/${p.media.length}</span>` : "");
       c.dataset.key = key;
       c.onclick = e => {
         const cb = c.querySelector("input");
         if (e.target !== cb) cb.checked = !cb.checked;
         c.classList.toggle("sel", cb.checked);
-        cb.checked ? sel.set(key, {post: p.folder, name: `${i + 1}.jpg`, url: u}) : sel.delete(key);
+        cb.checked ? sel.set(key, {post: p.folder, name: `${i + 1}.${m.is_video ? 'mp4' : 'jpg'}`, url: m.url}) : sel.delete(key);
         count();
       };
       $("#grid").append(c);
