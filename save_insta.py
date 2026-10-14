@@ -10,14 +10,15 @@
 브라우저가 열리며 http://127.0.0.1:5000 에서 사용 (PORT 환경변수로 변경).
 
 저장: ./downloads/<계정>/<날짜_포스트코드>/1.jpg, 2.mp4 ...  (SAVE_INSTA_DIR 로 위치 변경)
-인스타그램이 비로그인 요청을 막으면(401/429):
-    instaloader --login <내_아이디>   후   INSTA_SESSION_USER=<내_아이디> 로 실행
+인스타그램이 비로그인 요청을 막으면(401/429): 화면의 '로그인(선택)'에 브라우저 sessionid 쿠키 입력
+    (또는 INSTA_SESSIONID 환경변수 / instaloader 세션파일 + INSTA_SESSION_USER)
 비공개 계정은 지원하지 않습니다. 본인/허락받은 콘텐츠에만 사용하세요.
 """
 from __future__ import annotations
 
 import os
 import re
+import secrets
 import threading
 import webbrowser
 from collections.abc import Iterator
@@ -44,12 +45,24 @@ def get_loader() -> instaloader.Instaloader:
     global _loader
     if _loader is None:
         _loader = instaloader.Instaloader(
-            quiet=True, download_videos=False, save_metadata=False, compress_json=False
+            quiet=True, download_videos=False, save_metadata=False, compress_json=False,
+            max_connection_attempts=1,  # 429 시 수 분~수십 분 대기하지 않고 즉시 오류 반환
         )
+        sid = os.environ.get("INSTA_SESSIONID")
+        if sid:
+            apply_sessionid(_loader, sid)
         user = os.environ.get("INSTA_SESSION_USER")
         if user:
             _loader.load_session_from_file(user, os.environ.get("INSTA_SESSION_FILE"))
     return _loader
+
+
+def apply_sessionid(loader: instaloader.Instaloader, sessionid: str) -> None:
+    """브라우저에서 복사한 sessionid 쿠키로 로그인 상태를 만든다 (메모리에만 보관)."""
+    sessionid = sessionid.strip().strip('"')
+    if not re.fullmatch(r"[\w%.\-:]{10,300}", sessionid):
+        raise ValueError("sessionid 형식이 올바르지 않습니다.")
+    loader.context.load_session("session-user", {"sessionid": sessionid, "csrftoken": secrets.token_hex(16)})
 
 
 def parse_username(value: str) -> str:
@@ -122,6 +135,13 @@ INDEX_HTML = r'''<!doctype html>
     <input type="text" id="url" placeholder="https://www.instagram.com/username/" required>
     <button>사진 불러오기</button>
   </form>
+  <details style="margin-top:8px;font-size:13px">
+    <summary>로그인(선택) - 429/로그인 필요 오류가 날 때</summary>
+    <p style="margin:6px 0">브라우저에서 인스타그램에 로그인 → F12 → Application(저장소) → Cookies → instagram.com 의
+      <b>sessionid</b> 값을 복사해 붙여넣으세요. 이 PC 메모리에만 보관되며 프로그램을 끄면 사라집니다. (보조 계정 권장)</p>
+    <input type="password" id="sid" placeholder="sessionid" style="width:60%;padding:6px">
+    <button id="login" type="button">적용</button> <span id="lmsg"></span>
+  </details>
   <div id="bar" hidden>
     <button id="all" type="button">전체 선택/해제</button>
     <button id="dl" type="button">선택 다운로드 (<span id="cnt">0</span>)</button>
@@ -177,6 +197,12 @@ async function load(more) {
 }
 
 $("#f").onsubmit = e => { e.preventDefault(); load(false); };
+$("#login").onclick = async () => {
+  const r = await fetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({sessionid: $("#sid").value})});
+  const d = await r.json();
+  $("#lmsg").textContent = r.ok ? (d.logged_in ? "적용됨" : "로그아웃됨") : d.error;
+};
 $("#more").onclick = () => load(true);
 $("#all").onclick = () => {
   const cells = [...document.querySelectorAll(".cell")];
@@ -223,10 +249,13 @@ def api_posts():
         except instaloader.ProfileNotExistsException:
             return jsonify(error="존재하지 않는 계정입니다."), 404
         except instaloader.LoginRequiredException:
-            return jsonify(error="로그인이 필요합니다. README 의 세션 설정을 참고하세요."), 401
+            return jsonify(error="로그인이 필요합니다. 위 '로그인(선택)'에 sessionid 를 입력하세요."), 401
         except instaloader.TooManyRequestsException:
             return jsonify(error="요청이 너무 많습니다. 잠시 후 다시 시도하세요."), 429
         except instaloader.InstaloaderException as e:
+            if "429" in str(e):
+                return jsonify(error="인스타그램이 요청을 제한했습니다(429). 30분~수 시간 뒤 다시 시도하거나, "
+                                     "위 '로그인(선택)'에 sessionid 를 입력하세요."), 429
             return jsonify(error=f"인스타그램 오류: {e}"), 502
     return jsonify(username=username, posts=posts, has_more=len(posts) == PAGE_SIZE)
 
@@ -243,6 +272,22 @@ def _check_cdn(url: str) -> str:
     if p.scheme != "https" or not ALLOWED_CDN.search(p.hostname or ""):
         raise ValueError("허용되지 않은 이미지 주소입니다.")
     return url
+
+
+@app.post("/api/login")
+def api_login():
+    global _loader
+    sid = (request.get_json(silent=True) or {}).get("sessionid", "")
+    try:
+        with _lock:
+            if sid.strip():
+                apply_sessionid(get_loader(), sid)
+            else:  # 빈 값 = 로그아웃
+                _loader = None
+            _iterators.clear()
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+    return jsonify(ok=True, logged_in=bool(sid.strip()))
 
 
 @app.get("/api/img")
