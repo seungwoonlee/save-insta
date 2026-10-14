@@ -287,7 +287,8 @@ def api_download():
 def main() -> None:
     port = int(os.environ.get("PORT", 5000))
     url = f"http://127.0.0.1:{port}"
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    if not os.environ.get("SAVE_INSTA_NO_BROWSER"):
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     print(f"save-insta 실행 중: {url}  (종료: Ctrl+C)")
     app.run(host="127.0.0.1", port=port, debug=False)
 

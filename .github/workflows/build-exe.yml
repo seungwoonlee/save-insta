@@ -1,0 +1,45 @@
+name: build-windows-exe
+
+on:
+  push:
+    branches: [ccr-78af8104-eajepa]
+    paths: [save_insta.py, requirements.txt, .github/workflows/build-exe.yml]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt pyinstaller
+      - name: Build exe
+        run: pyinstaller --onefile --name save-insta save_insta.py
+      - name: Smoke test exe
+        shell: pwsh
+        run: |
+          $env:PORT = "5055"
+          $env:SAVE_INSTA_NO_BROWSER = "1"
+          $p = Start-Process -FilePath dist\save-insta.exe -PassThru -RedirectStandardOutput out.txt -RedirectStandardError err.txt
+          $ok = $false
+          foreach ($i in 1..30) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -Uri http://127.0.0.1:5055/ -UseBasicParsing
+              if ($r.StatusCode -eq 200 -and $r.Content -match "Save Insta") { $ok = $true; break }
+            } catch {}
+          }
+          # 잘못된 입력 API 응답 확인 (인스타 접속 없이 검증 가능)
+          if ($ok) {
+            try { Invoke-WebRequest -Uri http://127.0.0.1:5055/api/posts -Method Post -ContentType application/json -Body '{"url":"https://evil.com/x"}' -UseBasicParsing } catch { Write-Host "API status:" $_.Exception.Response.StatusCode.value__ }
+          }
+          Get-Content out.txt, err.txt -ErrorAction SilentlyContinue
+          Stop-Process -Id $p.Id -Force
+          if (-not $ok) { throw "exe did not serve the page" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: save-insta-windows
+          path: dist/save-insta.exe
