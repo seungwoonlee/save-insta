@@ -20,6 +20,7 @@ import os
 import re
 import secrets
 import threading
+import time
 import webbrowser
 from collections.abc import Iterator
 from itertools import islice
@@ -33,6 +34,7 @@ from flask import Flask, Response, jsonify, request
 PAGE_SIZE = 24
 BASE_DIR = Path(os.environ.get("SAVE_INSTA_DIR") or Path.cwd() / "downloads")  # 기본: 현재 디렉토리/downloads
 ALLOWED_CDN = re.compile(r"(^|\.)(cdninstagram\.com|fbcdn\.net)$")
+DL_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
 RESERVED = {"p", "reel", "reels", "explore", "stories", "accounts", "tv", "direct"}
 
 app = Flask(__name__)
@@ -215,9 +217,10 @@ $("#dl").onclick = async () => {
   const r = await fetch("/api/download", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({username, items: [...sel.values()]})});
   const d = await r.json();
-  if (!r.ok) return show(d.error);
-  show("");
-  alert(`${d.count}장 저장 완료\n${d.folder}`);
+  if (!r.ok && !d.failed) return show(d.error);
+  show(!r.ok ? "전체 실패 - 아래 사유 확인" : "");
+  const f = (d.failed || []).map(x => `${x.file}: ${x.error}`).join("\n");
+  alert(`${d.count}장 저장 완료\n${d.folder}` + (f ? `\n\n실패 ${d.failed.length}건:\n${f}` : ""));
 };
 </script>
 </body>
@@ -318,20 +321,40 @@ def api_download():
         names = [_safe_name(it["name"]) for it in items]
     except (ValueError, KeyError) as e:
         return jsonify(error=str(e)), 400
-    saved = 0
-    try:
-        for url, post, name in zip(urls, posts, names):
-            folder = BASE_DIR / username / post
-            folder.mkdir(parents=True, exist_ok=True)
-            with requests.get(url, timeout=30, stream=True) as r:
+    saved, failed = 0, []
+    for url, post, name in zip(urls, posts, names):
+        folder = BASE_DIR / username / post
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            _fetch_to_file(url, folder / name)
+            saved += 1
+        except (requests.RequestException, OSError) as e:
+            msg = f"{type(e).__name__}: {e}"
+            print(f"[download failed] {post}/{name}: {msg}", flush=True)  # 콘솔에도 사유 출력
+            failed.append({"file": f"{post}/{name}", "error": msg[:200]})
+    status = 200 if saved or not failed else 502
+    return jsonify(count=saved, failed=failed, folder=str(BASE_DIR / username)), status
+
+
+def _fetch_to_file(url: str, path: Path, tries: int = 3) -> None:
+    """CDN 에서 스트리밍으로 받아 저장. 일시 오류는 재시도, 실패 시 부분 파일 삭제."""
+    last: Exception | None = None
+    for i in range(tries):
+        try:
+            with requests.get(url, headers=DL_HEADERS, timeout=(10, 60), stream=True) as r:
                 r.raise_for_status()
-                with open(folder / name, "wb") as f:  # 영상은 크므로 스트리밍 저장
+                with open(path, "wb") as f:
                     for chunk in r.iter_content(1 << 16):
                         f.write(chunk)
-            saved += 1
-    except requests.RequestException as e:
-        return jsonify(error=f"다운로드 실패: {e} ({saved}장 저장됨)"), 502
-    return jsonify(count=saved, folder=str(BASE_DIR / username))
+            return
+        except requests.RequestException as e:
+            last = e
+            path.unlink(missing_ok=True)
+            if isinstance(e, requests.HTTPError) and e.response is not None and e.response.status_code in (400, 403, 404):
+                break  # 만료/권한 문제는 재시도해도 소용없음
+            time.sleep(1 + i)
+    assert last is not None
+    raise last
 
 
 def main() -> None:
